@@ -25,7 +25,14 @@ static inline void dnnl_matmul_w8a8_fp8(
   const int n = o_sz.back();  // presume channel last format
   const int k = *(src_sz.end() - 1);
 
-  bool is_block_quant = (m1_sc.dim() == 2) && (m1_sc.size(1) > 1);
+  // Block quant: src scale [M, gK], weight scale [gK, gN]. With a single K
+  // block (gK == 1, e.g. a TP-sharded weight with K == block size) the src
+  // scale [M, 1] looks per-token, so also detect it from a weight scale of
+  // [1, gN] with 1 < gN < N; a per-channel weight scale has N elements.
+  bool is_block_quant =
+      (m1_sc.dim() == 2) &&
+      ((m1_sc.size(1) > 1) || (m2_sc.dim() == 2 && m2_sc.size(0) == 1 &&
+                               m2_sc.size(1) > 1 && m2_sc.size(1) < n));
 
   int64_t wei_group_k = -1;
   int64_t wei_group_n = -1;
@@ -47,6 +54,23 @@ static inline void dnnl_matmul_w8a8_fp8(
         ".");
     wei_group_k = k / m2_sc.size(0);
     wei_group_n = n / m2_sc.size(1);
+  } else {
+    // Non-block scales are read as per-tensor or per-token / per-channel;
+    // reject sizes that would make oneDNN read past the scale buffers.
+    TORCH_CHECK(
+        m1_sc.numel() == 1 || m1_sc.numel() == m,
+        "fp8 matmul src scale must be per-tensor or per-token (M=",
+        m,
+        "), got shape ",
+        m1_sc.sizes(),
+        ".");
+    TORCH_CHECK(
+        m2_sc.numel() == 1 || m2_sc.numel() == n,
+        "fp8 matmul weight scale must be per-tensor or per-channel (N=",
+        n,
+        "), got shape ",
+        m2_sc.sizes(),
+        ".");
   }
 
   // get joint dtypes
