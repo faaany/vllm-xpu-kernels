@@ -38,10 +38,14 @@ MNK_BLOCK_FACTORS = [
     (4, 256, 1024),
     (8, 256, 1024),
     (8, 512, 1024),
+    # K == 256: a single K block for group_size 256
+    (1, 2048, 256),
+    (37, 2048, 256),
 ]
 
 MINI_MNK_BLOCK_FACTORS = [
     (1, 256, 256),
+    (1, 2048, 256),  # single K block with N/group > 1
 ]
 
 MNK_W8A16_BLOCK_FACTORS = [
@@ -492,54 +496,6 @@ def test_fp8_gemm_per_block(fp8_dtype, dtype, is_nt, batch, group_size,
                                                    use_ue8m0=use_ue8m0)
 
     # reference: dequantize FP8 data, then multiply
-    input_deq = per_token_group_dequant_fp8(input_fp8, scale_src_fp8,
-                                            group_size, dtype)
-    weight_deq = fp8_block_dequant_2d(weight_fp8, scale_wei_fp8, group_size,
-                                      group_size, dtype)
-    output_ref = torch.matmul(input_deq, weight_deq.t())
-
-    weight_fp8 = weight_fp8.transpose(0, 1)
-    if is_nt:
-        weight_fp8 = weight_fp8.contiguous()
-
-    output_fp8 = fp8_gemm(
-        input_fp8,
-        weight_fp8,
-        dtype,
-        scale_src_fp8,
-        scale_wei_fp8.t().contiguous(),
-        torch.Tensor(),
-    )
-
-    torch.testing.assert_close(output_fp8, output_ref, atol=6e-2, rtol=6e-2)
-
-
-@pytest.mark.parametrize("fp8_dtype", [torch.float8_e4m3fn])
-@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-@pytest.mark.parametrize("is_nt", [True, False])
-@pytest.mark.parametrize("m", [1, 37])
-@pytest.mark.parametrize("n", [256, 2048])
-@pytest.mark.parametrize("group_size", GROUP_SIZE)
-def test_fp8_gemm_per_block_single_k_block(fp8_dtype, dtype, is_nt, m, n,
-                                           group_size):
-    """K == block size: src scale is [M, 1] and weight scale is [1, N/gs].
-
-    This is e.g. a down_proj with intermediate size 512 sharded over TP=4.
-    """
-    torch.manual_seed(1234)
-    k = group_size
-
-    input = torch.randn([m, k], dtype=dtype, device=torch.device("xpu")) / 10.0
-    weight = torch.randn([n, k], dtype=dtype).xpu() / 10.0
-
-    input_fp8, scale_src_fp8 = per_token_group_quant_fp8(input,
-                                                         group_size,
-                                                         dtype=fp8_dtype)
-    weight_fp8, scale_wei_fp8 = fp8_block_quant_2d(weight, group_size,
-                                                   group_size)
-    assert scale_src_fp8.shape == (m, 1)
-    assert scale_wei_fp8.shape == (n // group_size, 1)
-
     input_deq = per_token_group_dequant_fp8(input_fp8, scale_src_fp8,
                                             group_size, dtype)
     weight_deq = fp8_block_dequant_2d(weight_fp8, scale_wei_fp8, group_size,
